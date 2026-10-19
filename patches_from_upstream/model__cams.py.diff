@@ -1,0 +1,166 @@
+--- a/model/cams.py
++++ b/model/cams.py
+@@ -1,84 +1,106 @@
++"""
++cams.py（CausalCAMS 修改版）
++新增：
++  1. 实例化 CausalIBLoss（含三个 CLUB 估计器）
++  2. forward 解包 image_encoder 的第 5 个返回值 z_nc
++  3. 将因果解耦损失加入总损失
++原始 CAMS 四分支分类逻辑保持不变。
++"""
++
+ import torch
+ from torch import nn
+ from clip_modules import clip
+ import torch.nn.functional as F
+ from model.csp import CSPInterface
+ from clip_modules.text_encoder import CustomTextEncoder
++from model.causal_modules import CausalIBLoss          # ← 新增
+ 
+-""""
+-    CAMS: Towards Compositional Zero-Shot Learning via Gated Cross-Attention and Multi-Space Disentanglement 
+-"""
+ 
+ class CAMS(nn.Module):
+ 
+-    def __init__(self,args,dataset):
++    def __init__(self, args, dataset):
+         super(CAMS, self).__init__()
+         self.args = args
+         self.dset = dataset
+-        
+-        self.clip_model = clip.load_clip(self.args) # Load the pre-trained CLIP. See "Learning Transferable Visual Models From Natural Language Supervision".
++
++        self.clip_model    = clip.load_clip(self.args)
+         self.image_encoder = self.clip_model.encode_image
+-        self.text_encoder = CustomTextEncoder(self.clip_model)
+-        
+-        self.csp = CSPInterface(clip.tokenize, self.clip_model, self.dset,self.args) # Use the soft prompt method. See "Troika: Multi-Path Cross-Modal Traction for Compositional Zero-Shot Learning".
++        self.text_encoder  = CustomTextEncoder(self.clip_model)
++
++        self.csp = CSPInterface(clip.tokenize, self.clip_model, self.dset, self.args)
++
+         attr2idx = self.dset.attr2idx
+-        obj2idx = self.dset.obj2idx
+-        self.train_pairs = torch.tensor([(attr2idx[attr], obj2idx[obj])
+-                                         for attr, obj in self.dset.train_pairs])        
++        obj2idx  = self.dset.obj2idx
++        self.train_pairs = torch.tensor(
++            [(attr2idx[attr], obj2idx[obj]) for attr, obj in self.dset.train_pairs]
++        )
+ 
+-        self.temp_logit = nn.Parameter(self.clip_model.logit_scale.exp().detach()) # Temperature
+-        
++        self.temp_logit = nn.Parameter(self.clip_model.logit_scale.exp().detach())
++
++        # ── 新增：因果信息瓶颈损失模块 ──────────────────────────────────────
++        feat_dim = self.clip_model.visual.output_dim   # ViT-L/14 → 768
++        self.causal_ib = CausalIBLoss(
++            feat_dim          = feat_dim,
++            hidden_dim        = getattr(args, "club_hidden_dim",    512),
++            club_ao_weight    = getattr(args, "club_ao_weight",     1e-3),
++            club_az_weight    = getattr(args, "club_az_weight",     1e-3),
++            club_oz_weight    = getattr(args, "club_oz_weight",     1e-3),
++            club_learn_weight = getattr(args, "club_learn_weight",  1e-2),
++        )
++        # ────────────────────────────────────────────────────────────────────
++
+     def forward(self, data):
+-        img, att_id, obj_id , pair_id = data[0] , data[1], data[2] , data[3] 
++        img, att_id, obj_id, pair_id = data[0], data[1], data[2], data[3]
+ 
+-        # Obtain the semantic representations of the four branches.
+-        att,obj,com,glb = self.image_encoder(img)
+-        att_semantic_reps = F.normalize(att, p=2, dim=-1) 
+-        obj_semantic_reps = F.normalize(obj, p=2, dim=-1) 
+-        com_semantic_reps = F.normalize(com, p=2, dim=-1) 
++        # ── image_encoder 现在返回 5 个张量 ─────────────────────────────────
++        att, obj, com, glb, z_nc = self.image_encoder(img)
++
++        # 归一化（用于分类对齐）
++        att_semantic_reps = F.normalize(att, p=2, dim=-1)
++        obj_semantic_reps = F.normalize(obj, p=2, dim=-1)
++        com_semantic_reps = F.normalize(com, p=2, dim=-1)
+         glb_semantic_reps = F.normalize(glb, p=2, dim=-1)
+-        
+-        # Obtain the prompt representations.
+-        token_com,token_att,token_obj = self.csp.construct_token_tensors(self.train_pairs)
+-        com_prompt_reps,att_prompt_reps,obj_prompt_reps = self.get_text_features(token_com,token_att,token_obj)
+-        
+-        
+-        # Align the four branches. 
++
++        # 文本 prompt 表示
++        token_com, token_att, token_obj = self.csp.construct_token_tensors(self.train_pairs)
++        com_prompt_reps, att_prompt_reps, obj_prompt_reps = self.get_text_features(
++            token_com, token_att, token_obj
++        )
++
++        # ── 四分支分类对齐（原始 CAMS，保留）────────────────────────────────
+         att_branch = self.temp_logit * att_semantic_reps @ att_prompt_reps.T
+         obj_branch = self.temp_logit * obj_semantic_reps @ obj_prompt_reps.T
+         com_branch = self.temp_logit * com_semantic_reps @ com_prompt_reps.T
+         glb_branch = self.temp_logit * glb_semantic_reps @ com_prompt_reps.T
+-        
+-        att_loss = F.cross_entropy(att_branch , att_id)
+-        obj_loss = F.cross_entropy(obj_branch , obj_id)
+-        com_loss = F.cross_entropy(com_branch , pair_id)
+-        glb_loss = F.cross_entropy(glb_branch , pair_id)
+-                     
+-        total_loss = self.args.att_loss_weight * att_loss + \
+-                     self.args.obj_loss_weight * obj_loss + \
+-                     self.args.com_loss_weight * com_loss + \
+-                     self.args.glb_loss_weight * glb_loss
+ 
+-        return total_loss
+-    
+-    def get_text_features(self,token_com,token_att,token_obj):
++        att_loss = F.cross_entropy(att_branch, att_id)
++        obj_loss = F.cross_entropy(obj_branch, obj_id)
++        com_loss = F.cross_entropy(com_branch, pair_id)
++        glb_loss = F.cross_entropy(glb_branch, pair_id)
++
++        task_loss = (
++              self.args.att_loss_weight * att_loss
++            + self.args.obj_loss_weight * obj_loss
++            + self.args.com_loss_weight * com_loss
++            + self.args.glb_loss_weight * glb_loss
++        )
++
++        # ── 新增：因果解耦损失 ────────────────────────────────────────────────
++        # 传入未归一化特征，保留完整距离度量信息
++        # causal_ib 内部：detached 副本用于训练估计器，真实梯度用于训练编码器
++        causal_loss, _ = self.causal_ib(att, obj, z_nc)
++        # ────────────────────────────────────────────────────────────────────
++
++        return task_loss + causal_loss
++
++    def get_text_features(self, token_com, token_att, token_obj):
+         text_features_com = self.text_encoder(
+-            self.csp.token_ids[0],
+-            token_com,
+-            enable_pos_emb=True
+-        )  
++            self.csp.token_ids[0], token_com, enable_pos_emb=True)
+         text_features_att = self.text_encoder(
+-            self.csp.token_ids[1],
+-            token_att,
+-            enable_pos_emb=True
+-        )  
++            self.csp.token_ids[1], token_att, enable_pos_emb=True)
+         text_features_obj = self.text_encoder(
+-            self.csp.token_ids[2],
+-            token_obj,
+-            enable_pos_emb=True
+-        )  
+-        text_features_com = F.normalize(text_features_com, p=2, dim=-1)  
+-        text_features_att = F.normalize(text_features_att, p=2, dim=-1)  
+-        text_features_obj = F.normalize(text_features_obj, p=2, dim=-1)  
+-        return text_features_com,text_features_att,text_features_obj
+-    
++            self.csp.token_ids[2], token_obj, enable_pos_emb=True)
++        text_features_com = F.normalize(text_features_com, p=2, dim=-1)
++        text_features_att = F.normalize(text_features_att, p=2, dim=-1)
++        text_features_obj = F.normalize(text_features_obj, p=2, dim=-1)
++        return text_features_com, text_features_att, text_features_obj

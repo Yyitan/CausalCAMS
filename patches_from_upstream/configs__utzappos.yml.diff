@@ -1,0 +1,75 @@
+--- a/configs/utzappos.yml
++++ b/configs/utzappos.yml
+@@ -1,36 +1,43 @@
+ model:
++  adapter_dim: 64
++  clip_model: "./lyt/czsl/CLIP-main/ViT-L-14.pt"
++  ctx_init:
++  - 'a photo of '
++  - 'a photo of '
++  - 'a photo of '
++  m_layers: 9
+   model_name: CAMS
+-  prompt_template: ["a photo of x x", "a photo of x", "a photo of x"]
+-  ctx_init: ["a photo of ", "a photo of ", "a photo of "]
+-  clip_model: "./lyt/czsl/CLIP-main/ViT-L-14.pt"
+   num_units: 32
+-  m_layers: 9
+-  adapter_dim: 64
+-
++  prompt_template:
++  - a photo of x x
++  - a photo of x
++  - a photo of x
++test:
++  beta: 0.65
++  eval_batch_size: 64
++  feasibility: feasibilities/feasibility_zp.pt
++  load_model: false
++  open_world: true
++  threshold: 0.4705232256
++  threshold_trials: 50
+ train:
++  att_loss_weight: 0.5
++  club_ao_weight: 0.001
++  club_az_weight: 0.001
++  club_hidden_dim: 512
++  club_learn_weight: 0.01
++  club_oz_weight: 0.001
++  com_loss_weight: 1
++  context_length: 8
+   dataset: ut-zappos
++  epochs: 15
++  gamma: 0.5
++  glb_loss_weight: 1
++  lr: 0.00025
++  obj_loss_weight: 0.5
++  save_final_model: true
++  save_path: weight/ut
++  seed: 0
+   step_size: 1
+-  gamma: 0.5
+-  lr: 0.00025
+-  train_batch_size: 64   
+-  epochs: 15
+-  context_length: 8
+-  seed: 0
++  train_batch_size: 64
+   val_metric: AUC
+-  save_final_model: True
+-  save_path: output/UT
+-  att_loss_weight: 0.5
+-  obj_loss_weight: 0.5
+-  com_loss_weight: 1
+-  glb_loss_weight: 1
+-
+-test:
+-  open_world: true   # If it’s the open-world setting, just set it to "true"
+-  eval_batch_size: 64  
+-  feasibility: feasibilities/feasibility_zp.pt 
+-  threshold: 0.4705232256
+-  threshold_trials: 50  
+-  beta: 0.65 
+-
+-  load_model: weight/final_model.pt # Path of the trained model
+-

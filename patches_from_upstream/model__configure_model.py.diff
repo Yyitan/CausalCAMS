@@ -1,0 +1,55 @@
+--- a/model/configure_model.py
++++ b/model/configure_model.py
+@@ -1,22 +1,40 @@
++"""
++configure_model.py（CausalCAMS 修改版）
++新增关键词：'causal_ib'（CLUB 估计器）、'proj_z'（Z 分支投影）
++tr_z 已被原有 'tr_' 前缀覆盖，无需单独添加。
++"""
++
+ import torch
+ from model.cams import CAMS
+ 
+-def configure_model(args,dataset):
+-    
+-    cams = CAMS(args,dataset)
+-    keywords = ['csp','norm','tr_','adapter','proj_att','proj_obj','proj_com','temp_logit','cross_attention','latent_units']
+-    
+-    # Freeze the pre-trained CLIP parameters.
++
++def configure_model(args, dataset):
++
++    cams = CAMS(args, dataset)
++
++    keywords = [
++        # 原始 CAMS
++        'csp', 'norm', 'tr_', 'adapter',
++        'proj_att', 'proj_obj', 'proj_com',
++        'temp_logit', 'cross_attention', 'latent_units',
++        # CausalCAMS 新增
++        'causal_ib',   # 三个 CLUB 估计器的所有参数
++        'proj_z',      # Z 分支投影矩阵
++    ]
++
+     for name, param in cams.named_parameters():
+         param.requires_grad = False
+-        if any(keyword in name for keyword in keywords):
++        if any(kw in name for kw in keywords):
+             param.requires_grad = True
+-    
++
++    trainable = sum(p.numel() for p in cams.parameters() if p.requires_grad)
++    total     = sum(p.numel() for p in cams.parameters())
++    print(f"[configure_model] Trainable: {trainable:,} / {total:,} "
++          f"({100 * trainable / total:.2f}%)")
++
+     optimizer = torch.optim.Adam(
+-        cams.parameters(),
++        filter(lambda p: p.requires_grad, cams.parameters()),
+         lr=args.lr,
+-        weight_decay=args.weight_decay
++        weight_decay=args.weight_decay,
+     )
+-
+     return cams, optimizer
+-

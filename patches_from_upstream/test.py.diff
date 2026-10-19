@@ -1,0 +1,11 @@
+--- a/test.py
++++ b/test.py
+@@ -390,7 +390,7 @@
+             with torch.no_grad():
+                 data = [d.to('cuda') if not isinstance(d, tuple) else d for d in data]  
+                 img = data[0] 
+-                att,obj,com,glb = model.image_encoder(img)
++                att, obj, com, glb, _z_nc = model.image_encoder(img)  # CausalCAMS
+ 
+                 att_semantic_reps = F.normalize(att, p=2, dim=-1) 
+                 obj_semantic_reps = F.normalize(obj, p=2, dim=-1) 
